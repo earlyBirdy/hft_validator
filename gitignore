@@ -1,0 +1,42 @@
+# Virtual environments
+.venv/
+.venv311/
+env/
+venv/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.build/
+
+# Test/coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.cache/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Reports & large local outputs
+report*.html
+*.png
+*.jpg
+*.pdf
+*.zip
+
+# Data (sample can be regenerated or pulled)
+data/*.csv
+
+# Node/npm (if added later)
+node_modules/
+
+# AWS/SAM build output
+.aws-sam/
+infra/.aws-sam/
