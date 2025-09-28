@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Thin adapter (API GW -> Lambda -> optional Bedrock)
+Globals:
+  Function:
+    Timeout: 10
+    MemorySize: 512
+    Runtime: python3.12
+    Handler: lambda_handler.handler
+Resources:
+  AgentApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+  AgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: lambda_handler.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            Sid: BedrockInvoke
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource: "*"
+      Environment:
+        Variables:
+          AGENT_IMPL: bedrock
+          USE_BEDROCK: '1'
+          DATA_PATH: data/sample_prices.csv
+      Events:
+        PostDecision:
+          Type: Api
+          Properties:
+            Path: /decision
+            Method: post
+            RestApiId: !Ref AgentApi
