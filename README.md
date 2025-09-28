@@ -1,7 +1,7 @@
 # HFT Validator Framework with AWS Agent Extension
 
 This repo contains:
-- C++ backtester & validators (nanosecond vs millisecond performance)
+- C++ backtester & validators
 - Python AI agent for local parameter tuning
 - AWS Hackathon extension:
   - Bedrock agent scaffold (`python/agent_bedrock.py`)
