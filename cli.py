@@ -1,6 +1,5 @@
-
 import os, json, argparse, io, base64
-from datetime import datetime
+from datetime import datetime, UTC
 from app.data import load_prices_csv
 from app.backtester import ewma_strategy, persistence_strategy, ewma_run, persistence_run, list_strategies
 from app.strategies.auto_select import smart_choose_and_run
@@ -18,16 +17,22 @@ def run_baseline(prices):
             "metrics": ewma_strategy(prices, alpha=0.05, threshold=2.5, window=50)}
 
 def generate_report_html(path, prices, baseline, final):
+    # Recompute equity curves and detect overlap
+    from math import isclose
     _, eq_base = ewma_run(prices, **baseline["params"]) if baseline["strategy"]=="EWMA" else persistence_run(prices, **baseline["params"])
     if final["strategy"]=="EWMA":
         _, eq_final = ewma_run(prices, **final["params"])
     else:
         _, eq_final = persistence_run(prices, **final["params"])
 
+    same_len = len(eq_base) == len(eq_final)
+    identical = same_len and all(isclose(a, b, rel_tol=1e-12, abs_tol=1e-12) for a, b in zip(eq_base, eq_final))
+
     import matplotlib.pyplot as plt
     plt.figure()
-    plt.plot(eq_base, label="Baseline")
-    plt.plot(eq_final, label="Final")
+    # Keep default colors, but visually distinguish
+    plt.plot(eq_base, label="Baseline", linestyle="-")
+    plt.plot(eq_final, label="Final" + (" (identical)" if identical else ""), linestyle="--" if identical else "-", alpha=0.85)
     plt.legend()
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
@@ -36,11 +41,15 @@ def generate_report_html(path, prices, baseline, final):
 
     def row(name, m):
         return f"<tr><td>{name}</td><td>{m['pnl']:.4f}</td><td>{m['trades']}</td><td>{m['wins']}</td><td>{m['max_dd']:.4f}</td><td>{m['sharpe']:.4f}</td></tr>"
+
+    identical_note = "<p><em>Note: Baseline and Final equity curves are identical for this run.</em></p>" if identical else ""
+
     html = f"""<!doctype html><html><head><meta charset='utf-8'><title>HFT Validator Report</title>
 <style>body{{font-family:Arial;margin:20px}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ddd;padding:8px;text-align:right}}th{{text-align:center}}td:first-child,th:first-child{{text-align:left}}</style>
 </head><body>
 <h1>HFT Validator Report</h1>
-<p><small>Generated: {datetime.utcnow().isoformat()}Z</small></p>
+<p><small>Generated: {datetime.now(UTC).isoformat()}</small></p>
+{identical_note}
 <h2>Equity (Baseline vs Final)</h2>
 <img alt="equity" src="data:image/png;base64,{b64}">
 <h2>Metrics</h2>
@@ -73,7 +82,7 @@ def main():
     baseline=run_baseline(prices)
 
     decide=select_agent()
-    hint=decide({"timestamp": datetime.utcnow().isoformat(), "baseline": baseline["metrics"]})
+    hint=decide({"timestamp": datetime.now(UTC).isoformat(), "baseline": baseline["metrics"]})
     chosen=smart_choose_and_run(prices)
 
     final_params=dict(chosen["params"])
@@ -93,6 +102,12 @@ def main():
     result={"baseline":baseline,"smart":chosen,"agent_hint":hint,
             "final":{"strategy":chosen["strategy"],"params":final_params,"metrics":final_metrics},
             "improvement_sharpe_over_baseline": final_metrics["sharpe"]-baseline["metrics"]["sharpe"]}
+
+    # Safeguard: require improvement (default ON). Disable with REQUIRE_IMPROVEMENT=0
+    if os.environ.get("REQUIRE_IMPROVEMENT","1") == "1" and result["improvement_sharpe_over_baseline"] < 0:
+        result["note"] = "Final Sharpe < baseline — falling back to baseline due to REQUIRE_IMPROVEMENT=1."
+        result["final"] = result["baseline"]
+        result["improvement_sharpe_over_baseline"] = 0.0
 
     if args.report:
         generate_report_html(args.report, prices, baseline, result["final"])

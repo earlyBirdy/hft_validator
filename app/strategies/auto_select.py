@@ -10,8 +10,9 @@ def _features(prices: List[Tuple[str,float]])->Dict:
 
 def smart_choose_and_run(prices: List[Tuple[str,float]])->Dict:
     feats=_features(prices); candidates=[]
-    if abs(feats["trend"])>0.01 and feats["vol"]<0.5:
-        grid=[(0.03,2.0,80),(0.05,2.5,50),(0.08,3.0,30)]
+    # Favor EWMA on trendier & moderate-vol regimes; wider grid
+    if abs(feats["trend"])>0.008 and feats["vol"]<0.6:
+        grid=[(0.02,1.8,90),(0.03,2.0,80),(0.05,2.5,50),(0.08,3.0,30),(0.10,3.2,25)]
         for a,t,w in grid:
             m=ewma_strategy(prices, alpha=a, threshold=t, window=w)
             candidates.append(("EWMA", {"alpha":a,"threshold":t,"window":w}, m))
