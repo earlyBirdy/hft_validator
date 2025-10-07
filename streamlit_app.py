@@ -1,87 +1,174 @@
-
-import os, sys, json
+import os
+import sys
+import json
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-REPO = os.path.abspath(os.path.dirname(__file__))
-PY_DIR = os.path.join(REPO, "python")
-AWS_DIR = os.path.join(REPO, "aws")
-RESULTS_DIR = os.path.join(REPO, "results")
+# --- Paths ---
+REPO = Path(__file__).resolve().parent
+RESULTS_DIR = REPO / "results"
+AWS_DIR = REPO / "aws"
+PY_DIR = REPO / "python"
 
-if PY_DIR not in sys.path:
-    sys.path.insert(0, PY_DIR)
+if str(PY_DIR) not in sys.path:
+    sys.path.insert(0, str(PY_DIR))
 
 import visualize_metrics as vm
-import optimizer
+
+# Optional: tuner
+try:
+    import optimizer
+except Exception:
+    optimizer = None
 
 st.set_page_config(page_title="AgentGuard Dashboard", layout="wide")
 st.title("AgentGuard — Local Dashboard")
 st.caption("Baseline vs Agent metrics, validator choices, and reasoning logs (local simulation)")
 
+# --- Load best params if present ---
+BEST_PATH = RESULTS_DIR / "best_params.json"
+_best_raw = None
+_best = {}
+if BEST_PATH.exists():
+    try:
+        _best_raw = json.loads(BEST_PATH.read_text())
+        _best = _best_raw.get("params", {})
+    except Exception:
+        _best = {}
+
+def best_val(name, fallback):
+    return _best.get(name, fallback)
+
+# Convenience: set multiple session_state defaults at once
+def ensure_defaults(defaults: dict):
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
+
+# Apply best params into session_state and rerun
+def apply_best_and_rerun():
+    for k, v in _best.items():
+        st.session_state[k] = v
+    st.session_state["__apply_best__"] = True
+    st.rerun()
+
+# =========================
+# Sidebar Controls
+# =========================
 with st.sidebar:
     st.header("Controls")
+
+    # defaults (used on first render)
+    ensure_defaults({
+        "n_ticks": 3000,
+        "ewma_alpha": 0.05, "ewma_z": 2.0,
+        "vol_window": 50, "vol_max": 0.01,
+        "persist_hold": 3, "persist_mean_alpha": 0.05, "persist_z": 0.2,
+        "baseline_latency": 5, "agent_latency": 1,
+        "cost_bps": 0.8, "slip_bps": 0.5,
+        "pos_calm": 1.0, "pos_volatile": 0.6, "pos_jumpy": 0.4,
+    })
+
     st.markdown("**Simulation**")
-    n_ticks = st.slider("Ticks", min_value=600, max_value=12000, value=3000, step=200)
+    n_ticks = st.slider(
+        "Ticks", 600, 12000, int(st.session_state.get("n_ticks", 3000)), 200, key="n_ticks"
+    )
 
     st.markdown("---")
     st.markdown("**EWMA Params**")
-    ewma_alpha = st.slider("EWMA α (alpha)", 0.001, 0.2, 0.05, 0.001)
-    ewma_z = st.slider("Z-score threshold", 1.0, 5.0, 2.0, 0.1)
+    st.caption(f"best: α={best_val('ewma_alpha', '—')}, z={best_val('ewma_z', '—')}")
+    ewma_alpha = st.slider("EWMA α (alpha)", 0.001, 0.2, float(st.session_state.get("ewma_alpha", 0.05)), 0.001, key="ewma_alpha")
+    ewma_z     = st.slider("Z-score threshold", 1.0, 5.0, float(st.session_state.get("ewma_z", 2.0)), 0.1, key="ewma_z")
 
     st.markdown("**Volatility (returns) Params**")
-    vol_window = st.slider("Vol window (ticks)", 10, 200, 50, 5)
-    vol_max = st.slider("Max return vol (σ)", 0.001, 0.05, 0.01, 0.001)
+    st.caption(f"best: window={best_val('vol_window', '—')}, σ={best_val('vol_max', '—')}")
+    vol_window = st.slider("Vol window (ticks)", 10, 200, int(st.session_state.get("vol_window", 50)), 5, key="vol_window")
+    vol_max    = st.slider("Max return vol (σ)", 0.001, 0.05, float(st.session_state.get("vol_max", 0.01)), 0.001, key="vol_max")
 
     st.markdown("**Persistence (rolling mean) Params**")
-    persist_hold = st.slider("Hold ticks", 1, 20, 3, 1)
-    persist_mean_alpha = st.slider("Rolling mean α", 0.001, 0.2, 0.05, 0.001)
-    persist_z = st.slider("Above-mean threshold", 0.0, 1.0, 0.2, 0.01)
+    st.caption(f"best: hold={best_val('persist_hold', '—')}, α={best_val('persist_mean_alpha', '—')}, z={best_val('persist_z', '—')}")
+    persist_hold       = st.slider("Hold ticks", 1, 20, int(st.session_state.get("persist_hold", 3)), 1, key="persist_hold")
+    persist_mean_alpha = st.slider("Rolling mean α", 0.001, 0.2, float(st.session_state.get("persist_mean_alpha", 0.05)), 0.001, key="persist_mean_alpha")
+    persist_z          = st.slider("Above-mean threshold", 0.0, 1.0, float(st.session_state.get("persist_z", 0.2)), 0.01, key="persist_z")
 
     st.markdown("---")
     st.markdown("**Latency (proxy, ticks)**")
-    baseline_latency = st.slider("Baseline latency", 1, 20, 5, 1)
-    agent_latency = st.slider("Agent latency", 1, 10, 1, 1)
+    baseline_latency = st.slider("Baseline latency", 1, 20, int(st.session_state.get("baseline_latency", 5)), 1, key="baseline_latency")
+    agent_latency    = st.slider("Agent latency", 1, 10, int(st.session_state.get("agent_latency", 1)), 1, key="agent_latency")
 
     st.markdown("---")
     st.markdown("**Costs & Positions**")
-    cost_bps = st.slider("Transaction cost (bps)", 0.0, 5.0, 0.8, 0.1)
-    slip_bps = st.slider("Slippage (bps)", 0.0, 5.0, 0.5, 0.1)
-    pos_calm = st.slider("Position — Calm", 0.1, 2.0, 1.0, 0.05)
-    pos_volatile = st.slider("Position — Volatile", 0.1, 2.0, 0.6, 0.05)
-    pos_jumpy = st.slider("Position — Jumpy", 0.1, 2.0, 0.4, 0.05)
+    st.caption(
+        "best: cost_bps/slip_bps="
+        f"{best_val('cost_bps','—')}/{best_val('slip_bps','—')}, "
+        f"pos(calm/volatile/jumpy)="
+        f"{best_val('pos_calm','—')}/{best_val('pos_volatile','—')}/{best_val('pos_jumpy','—')}"
+    )
+    cost_bps = st.slider("Transaction cost (bps)", 0.0, 5.0, float(st.session_state.get("cost_bps", 0.8)), 0.1, key="cost_bps")
+    slip_bps = st.slider("Slippage (bps)", 0.0, 5.0, float(st.session_state.get("slip_bps", 0.5)), 0.1, key="slip_bps")
+    pos_calm     = st.slider("Position — Calm", 0.1, 2.0, float(st.session_state.get("pos_calm", 1.0)), 0.05, key="pos_calm")
+    pos_volatile = st.slider("Position — Volatile", 0.1, 2.0, float(st.session_state.get("pos_volatile", 0.6)), 0.05, key="pos_volatile")
+    pos_jumpy    = st.slider("Position — Jumpy", 0.1, 2.0, float(st.session_state.get("pos_jumpy", 0.4)), 0.05, key="pos_jumpy")
 
-    rerun = st.button("Run Simulation Pipeline")
-    apply_best = st.button("Apply Best Params (from best_params.json)")
+    # Action buttons
+    colA, colB, colC = st.columns(3)
+    with colA:
+        rerun = st.button("Run Simulation Pipeline")
+    with colB:
+        tune = st.button("Auto-tune (local random search)", disabled=(optimizer is None))
+    with colC:
+        apply_best = st.button("Apply Best & Run", disabled=(len(_best) == 0))
 
-    tune = st.button("Auto-tune (local random search)")
+# If user pressed "Apply Best & Run", load best → set session_state → rerun
+if 'apply_best' in locals() and apply_best:
+    apply_best_and_rerun()
 
-if rerun:
+# =========================
+# Run pipeline
+# =========================
+if 'rerun' in locals() and rerun:
     res = vm.run_pipeline(
         n_ticks=n_ticks,
         ewma_alpha=ewma_alpha, ewma_z=ewma_z,
         vol_window=vol_window, vol_max=vol_max,
-        persist_hold=persist_hold, persist_mean_alpha=persist_mean_alpha, persist_z=persist_z,
-        baseline_latency=baseline_latency, agent_latency=agent_latency,
+        persist_hold=persist_hold,
+        persist_mean_alpha=persist_mean_alpha,
+        persist_z=persist_z,
+        baseline_latency=baseline_latency,
+        agent_latency=agent_latency,
         cost_bps=cost_bps, slip_bps=slip_bps,
-        pos_calm=pos_calm, pos_volatile=pos_volatile, pos_jumpy=pos_jumpy,
-        out_dir=RESULTS_DIR, logs_path=os.path.join(AWS_DIR, "reasoning_logs.jsonl"),
+        pos_calm=pos_calm,
+        pos_volatile=pos_volatile,
+        pos_jumpy=pos_jumpy,
+        out_dir=str(RESULTS_DIR), logs_path=str(AWS_DIR / "reasoning_logs.jsonl"),
         generate_artifacts=True
     )
     st.success("Pipeline run complete. Results refreshed.")
 
-if tune:
-    st.info("Running local random search (25 trials)...")
-    best = optimizer.random_search(iters=25, seed=42, out_json=os.path.join(RESULTS_DIR, "best_params.json"))
+if 'tune' in locals() and tune and optimizer is not None:
+    st.info("Running local random search...")
+    best = optimizer.random_search(
+        iters=25, seed=42,
+        n_ticks=int(n_ticks),
+        baseline_latency=int(baseline_latency),
+        agent_latency=int(agent_latency),
+        cost_bps=float(cost_bps),
+        slip_bps=float(slip_bps),
+        out_json=str(RESULTS_DIR / "best_params.json"),
+    )
     if best:
         st.success(f"Best score: {best['score']:.4f}")
         st.json(best)
     else:
         st.error("Tuning failed")
 
-summary_path = os.path.join(RESULTS_DIR, "summary.csv")
+# =========================
+# Results & Visuals
+# =========================
+summary_path = RESULTS_DIR / "summary.csv"
 col1, col2 = st.columns(2)
-if os.path.exists(summary_path):
+if summary_path.exists():
     df = pd.read_csv(summary_path)
     with col1:
         st.subheader("Metrics Summary")
@@ -89,19 +176,26 @@ if os.path.exists(summary_path):
 else:
     st.info("No summary.csv found. Click 'Run Simulation Pipeline' to generate.")
 
-metrics_img = os.path.join(RESULTS_DIR, "metrics_compare.png")
-timeline_img = os.path.join(RESULTS_DIR, "agent_decisions_timeline.png")
+metrics_img = RESULTS_DIR / "metrics_compare.png"
+timeline_img = RESULTS_DIR / "agent_decisions_timeline.png"
 with col2:
-    if os.path.exists(metrics_img):
+    if metrics_img.exists():
         st.subheader("Baseline vs Agent — Key Metrics (with costs & scaling)")
-        st.image(metrics_img, use_column_width=True)
-    if os.path.exists(timeline_img):
+        st.image(str(metrics_img), use_column_width=True)
+    if timeline_img.exists():
         st.subheader("Agent Decisions Timeline")
-        st.image(timeline_img, use_column_width=True)
+        st.image(str(timeline_img), use_column_width=True)
 
+# Equity curves image
+eq_img = RESULTS_DIR / "equity_curves.png"
+if eq_img.exists():
+    st.subheader("Equity Curves — Baseline vs Agent")
+    st.image(str(eq_img), use_column_width=True)
+
+# Reasoning Logs
 st.subheader("Reasoning Logs")
-logs_path = os.path.join(AWS_DIR, "reasoning_logs.jsonl")
-if os.path.exists(logs_path) and os.path.getsize(logs_path) > 0:
+logs_path = AWS_DIR / "reasoning_logs.jsonl"
+if logs_path.exists() and logs_path.stat().st_size > 0:
     rows = []
     with open(logs_path) as f:
         for line in f:
@@ -113,7 +207,6 @@ if os.path.exists(logs_path) and os.path.getsize(logs_path) > 0:
         df_logs = pd.DataFrame(rows)
         st.dataframe(df_logs, use_container_width=True, height=240)
         counts = df_logs["decision"].value_counts().rename_axis("validator").reset_index(name="count")
-        import matplotlib.pyplot as plt
         fig, ax = plt.subplots()
         ax.bar(counts["validator"], counts["count"])
         ax.set_title("Validator Decision Counts")
@@ -124,30 +217,23 @@ else:
 st.markdown("---")
 st.subheader("Downloads")
 colA, colB, colC = st.columns(3)
-if os.path.exists(summary_path):
+if summary_path.exists():
     with open(summary_path, "rb") as f:
         colA.download_button("Download summary.csv", f, file_name="summary.csv")
-if os.path.exists(metrics_img):
+if metrics_img.exists():
     with open(metrics_img, "rb") as f:
         colB.download_button("Download metrics_compare.png", f, file_name="metrics_compare.png")
-if os.path.exists(timeline_img):
+if timeline_img.exists():
     with open(timeline_img, "rb") as f:
         colC.download_button("Download agent_decisions_timeline.png", f, file_name="agent_decisions_timeline.png")
 
-st.divider()
-st.caption("Tune parameters on the left, then rerun to refresh metrics. Use Auto-tune for a quick local search.")
-
-# Equity curves image
-eq_img = os.path.join(RESULTS_DIR, "equity_curves.png")
-if os.path.exists(eq_img):
-    st.subheader("Equity Curves — Baseline vs Agent")
-    st.image(eq_img, use_column_width=True)
-
-# Per-regime metrics table & download
-per_regime_csv = os.path.join(RESULTS_DIR, "per_regime_metrics.csv")
-if os.path.exists(per_regime_csv):
+# Per-regime metrics
+per_regime_csv = RESULTS_DIR / "per_regime_metrics.csv"
+if per_regime_csv.exists():
     st.subheader("Per-Regime Metrics")
     pr_df = pd.read_csv(per_regime_csv)
     st.dataframe(pr_df, use_container_width=True)
-    st.download_button("Download per_regime_metrics.csv", data=open(per_regime_csv,"rb"), file_name="per_regime_metrics.csv")
+    with open(per_regime_csv, "rb") as f:
+        st.download_button("Download per_regime_metrics.csv", f, file_name="per_regime_metrics.csv")
 
+st.caption("Tune parameters on the left, then rerun to refresh metrics. Use Auto-tune for a quick local search. Apply Best & Run will load tuned params.")
