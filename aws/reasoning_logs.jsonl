@@ -1,0 +1,3 @@
+{"timestamp": 1759807716, "metrics": {"regime": "calm_trend"}, "decision": "EWMA", "params": {"alpha": 0.05, "z": 2.5}, "reason": "Low volatility upward drift; EWMA z-threshold is effective."}
+{"timestamp": 1759807716, "metrics": {"regime": "volatile"}, "decision": "Volatility", "params": {"window": 50, "max_vol": 0.03}, "reason": "Volatility spike detected; trade only in low-vol windows."}
+{"timestamp": 1759807716, "metrics": {"regime": "jumpy"}, "decision": "Persistence", "params": {"hold": 3, "thresh": 0.0}, "reason": "Jumps/flickers present; require signal persistence across ticks."}
