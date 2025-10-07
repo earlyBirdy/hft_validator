@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 
@@ -36,8 +35,3 @@ def labeled_scenarios(n=5000, s0=100.0):
     ts = np.arange(n)
     df = pd.DataFrame({"t": ts, "price": price, "regime": label})
     return df
-
-if __name__ == "__main__":
-    df = labeled_scenarios()
-    df.to_csv("synthetic_ticks.csv", index=False)
-    print("Wrote synthetic_ticks.csv with columns: t, price, regime")

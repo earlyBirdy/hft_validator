@@ -1,7 +1,7 @@
 metric,baseline,agent
-total_pnl,0.49811691074337716,0.0
-trades,1,0
-fsr,0.0,0.0
-sharpe_like,0.0,0.0
+total_pnl,-1.0265750106602916,-19.663081012125524
+trades,55,878
+fsr,0.5272727272727272,0.5688288614731227
+sharpe_like,-0.03095045066949197,-0.05536102566050685
 dd_recovery_ticks,0,0
 adaptive_switch_count,0,2

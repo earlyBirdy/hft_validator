@@ -1,0 +1,23 @@
+{
+  "score": -0.007119399860216875,
+  "params": {
+    "ewma_alpha": 0.04079367637611825,
+    "ewma_z": 2.2636553809939866,
+    "vol_window": 66,
+    "vol_max": 0.004283568534864906,
+    "persist_hold": 3,
+    "persist_mean_alpha": 0.08332507253537486,
+    "persist_z": 0.13270481872326204,
+    "pos_calm": 0.73726759912065,
+    "pos_volatile": 0.5192684497532066,
+    "pos_jumpy": 0.15935902893643844
+  },
+  "metrics": {
+    "total_pnl": -6.427406447634536,
+    "trades": 597,
+    "fsr": 0.4680471344656006,
+    "sharpe_like": 0.408713754078565,
+    "dd_recovery_ticks": 0,
+    "adaptive_switch_count": 2
+  }
+}

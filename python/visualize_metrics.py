@@ -1,112 +1,170 @@
 
 import os, json
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from synthetic_market import labeled_scenarios
 from validator_sim import EWMAValidator, VolatilityValidator, PersistenceValidator, simulate
 from agent_reasoner import decide, log_decision
 
+def _metrics_from_result(res):
+    return {
+        "total_pnl": float(res["total_pnl"]),
+        "trades": int(res["trades"]),
+        "fsr": float(res["fsr"]),
+        "sharpe_like": float(res["sharpe_like"]),
+        "dd_recovery_ticks": int(res["dd_recovery_ticks"]),
+    }
+
 def run_pipeline(
     n_ticks=3000,
-    # validator params
-    ewma_alpha=0.05, ewma_z=2.5,
-    vol_window=50, vol_max=0.03,
-    persist_hold=3, persist_thresh=0.0,
-    # latency in ticks (coarse proxy): baseline vs agent
+    ewma_alpha=0.05, ewma_z=2.0,
+    vol_window=50, vol_max=0.01,
+    persist_hold=2, persist_mean_alpha=0.05, persist_z=0.15,
     baseline_latency=5, agent_latency=1,
-    # output locations
-    out_dir="../results", logs_path="../aws/reasoning_logs.jsonl"
+    cost_bps=0.8, slip_bps=0.5,
+    pos_calm=1.0, pos_volatile=0.6, pos_jumpy=0.4,
+    out_dir="../results", logs_path="../aws/reasoning_logs.jsonl",
+    generate_artifacts=True
 ):
+    out_dir = os.path.abspath(out_dir)
+    logs_path = os.path.abspath(logs_path)
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(logs_path), exist_ok=True)
+    # fresh reasoning log
+    open(logs_path, "w").close()
+
+    # Data
     df = labeled_scenarios(n=n_ticks)
     regimes = df['regime'].unique().tolist()
 
-    # Baseline (EWMA only) with higher latency
-    base = simulate(df, EWMAValidator(ewma_alpha, ewma_z), latency_ticks=baseline_latency)
+    # Baseline on full run
+    base_res = simulate(
+        df, EWMAValidator(ewma_alpha, ewma_z),
+        latency_ticks=baseline_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=1.0
+    )
+    base_equity = np.array(base_res.get("equity", [0.0]), dtype=float)
 
-    # Agent: adaptive per regime with lower latency
-    results = {}
-    logs = []
-    # reset logs
-    os.makedirs(os.path.dirname(logs_path), exist_ok=True)
-    open(logs_path, "w").close()
-
+    # Agent per regime
+    per_regime = []
+    agent_equity_parts = []
     for reg in regimes:
         sub = df[df['regime']==reg]
         dec = decide({"current_regime": reg})
-        # override chosen validator params with provided knobs when applicable
-        if dec["validator"] == "EWMA":
-            res = simulate(sub, EWMAValidator(ewma_alpha, ewma_z), latency_ticks=agent_latency)
-        elif dec["validator"] == "Volatility":
-            res = simulate(sub, VolatilityValidator(vol_window, vol_max), latency_ticks=agent_latency)
+        if reg == "calm_trend":
+            pos = pos_calm
+        elif reg == "volatile":
+            pos = pos_volatile
         else:
-            res = simulate(sub, PersistenceValidator(persist_hold, persist_thresh), latency_ticks=agent_latency)
-        results[reg] = res
-        logs.append(log_decision(dec, {"regime": reg}))
+            pos = pos_jumpy
 
-    import numpy as np
+        if dec["validator"] == "EWMA":
+            res = simulate(sub, EWMAValidator(ewma_alpha, ewma_z),
+                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+        elif dec["validator"] == "Volatility":
+            res = simulate(sub, VolatilityValidator(vol_window, vol_max),
+                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+        else:
+            res = simulate(sub, PersistenceValidator(persist_hold, persist_mean_alpha, persist_z),
+                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+
+        log_decision(dec, {"regime": reg}, logs_path)
+        met = _metrics_from_result(res)
+        met["regime"] = reg
+        per_regime.append(met)
+        agent_equity_parts.append(np.array(res.get("equity", [0.0]), dtype=float))
+
+    # Concatenate agent equity segments with offset so curve is continuous
+    agent_equity = []
+    offset = 0.0
+    for seg in agent_equity_parts:
+        if len(seg) == 0:
+            continue
+        seg_adj = seg + offset
+        offset = seg_adj[-1]
+        agent_equity.extend(seg_adj.tolist())
+    agent_equity = np.array(agent_equity, dtype=float)
+
+    # Aggregate agent metrics
     agg = {
-        "total_pnl": float(sum(r["total_pnl"] for r in results.values())),
-        "trades": int(sum(r["trades"] for r in results.values())),
-        "fsr": float(np.mean([r["fsr"] for r in results.values()])),
-        "sharpe_like": float(np.mean([r["sharpe_like"] for r in results.values()])),
-        "dd_recovery_ticks": int(np.mean([r["dd_recovery_ticks"] for r in results.values()])),
-        "adaptive_switch_count": len(regimes)-1
+        "total_pnl": float(sum(m["total_pnl"] for m in per_regime)),
+        "trades": int(sum(m["trades"] for m in per_regime)),
+        "fsr": float(np.mean([m["fsr"] for m in per_regime])) if per_regime else 0.0,
+        "sharpe_like": float(np.mean([m["sharpe_like"] for m in per_regime])) if per_regime else 0.0,
+        "dd_recovery_ticks": int(np.mean([m["dd_recovery_ticks"] for m in per_regime])) if per_regime else 0,
+        "adaptive_switch_count": max(len(per_regime)-1, 0)
     }
 
-    os.makedirs(out_dir, exist_ok=True)
+    artifacts = {}
 
-    # Metrics bar chart
-    labels = ["FSR", "Sharpe-like", "DD Recovery"]
-    base_vals = [base["fsr"], base["sharpe_like"], base["dd_recovery_ticks"]]
-    agent_vals = [agg["fsr"], agg["sharpe_like"], agg["dd_recovery_ticks"]]
+    # Write per-regime CSV
+    per_regime_csv = os.path.join(out_dir, "per_regime_metrics.csv")
+    pd.DataFrame(per_regime)[["regime","total_pnl","trades","fsr","sharpe_like","dd_recovery_ticks"]].to_csv(per_regime_csv, index=False)
+    artifacts["per_regime_csv"] = per_regime_csv
 
-    plt.figure(figsize=(8,4))
-    x = range(len(labels))
-    plt.bar([i-0.15 for i in x], base_vals, width=0.3, label=f"Baseline (EWMA, {baseline_latency} ticks)")
-    plt.bar([i+0.15 for i in x], agent_vals, width=0.3, label=f"Agent (Adaptive, {agent_latency} ticks)")
-    plt.xticks(list(x), labels)
-    plt.title("Baseline vs Agent — Key Metrics")
-    plt.legend()
-    metrics_img = os.path.join(out_dir, "metrics_compare.png")
-    plt.tight_layout(); plt.savefig(metrics_img, dpi=140); plt.close()
-
-    # Timeline of reasoning logs
-    with open(logs_path) as f:
-        rows = [json.loads(line) for line in f]
-    ylabels = [r["decision"] for r in rows]
-    t = list(range(len(rows)))
-    plt.figure(figsize=(8,2.8))
-    plt.plot(t, list(range(1, len(rows)+1)), marker="o")
-    plt.yticks(list(range(1, len(rows)+1)), ylabels)
-    plt.xlabel("Decision step")
-    plt.title("Agent Decisions Over Time")
-    timeline_img = os.path.join(out_dir, "agent_decisions_timeline.png")
-    plt.tight_layout(); plt.savefig(timeline_img, dpi=140); plt.close()
-
-    # CSV summary
-    import csv
+    # Summary CSV
     summary_csv = os.path.join(out_dir, "summary.csv")
-    with open(summary_csv, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["metric","baseline","agent"])
-        w.writerow(["total_pnl", base["total_pnl"], agg["total_pnl"]])
-        w.writerow(["trades", base["trades"], agg["trades"]])
-        w.writerow(["fsr", base["fsr"], agg["fsr"]])
-        w.writerow(["sharpe_like", base["sharpe_like"], agg["sharpe_like"]])
-        w.writerow(["dd_recovery_ticks", base["dd_recovery_ticks"], agg["dd_recovery_ticks"]])
-        w.writerow(["adaptive_switch_count", 0, agg["adaptive_switch_count"]])
+    with open(summary_csv, "w") as f:
+        f.write("metric,baseline,agent\n")
+        f.write(f"total_pnl,{base_res['total_pnl']},{agg['total_pnl']}\n")
+        f.write(f"trades,{base_res['trades']},{agg['trades']}\n")
+        f.write(f"fsr,{base_res['fsr']},{agg['fsr']}\n")
+        f.write(f"sharpe_like,{base_res['sharpe_like']},{agg['sharpe_like']}\n")
+        f.write(f"dd_recovery_ticks,{base_res['dd_recovery_ticks']},{agg['dd_recovery_ticks']}\n")
+        f.write(f"adaptive_switch_count,0,{agg['adaptive_switch_count']}\n")
+    artifacts["summary_csv"] = summary_csv
+
+    if generate_artifacts:
+        # Metrics bar chart
+        labels = ["FSR", "Sharpe-like", "DD Recovery"]
+        base_vals = [base_res["fsr"], base_res["sharpe_like"], base_res["dd_recovery_ticks"]]
+        agent_vals = [agg["fsr"], agg["sharpe_like"], agg["dd_recovery_ticks"]]
+
+        plt.figure(figsize=(8,4))
+        x = range(len(labels))
+        plt.bar([i-0.15 for i in x], base_vals, width=0.3, label=f"Baseline (EWMA, {baseline_latency} ticks)")
+        plt.bar([i+0.15 for i in x], agent_vals, width=0.3, label=f"Agent (Adaptive, {agent_latency} ticks)")
+        plt.xticks(list(x), labels)
+        plt.title("Baseline vs Agent — Key Metrics (with costs & scaling)")
+        plt.legend()
+        metrics_img = os.path.join(out_dir, "metrics_compare.png")
+        plt.tight_layout(); plt.savefig(metrics_img, dpi=140); plt.close()
+        artifacts["metrics_img"] = metrics_img
+
+        # Equity curve plot (Baseline vs Agent)
+        plt.figure(figsize=(9,4))
+        if base_equity.size > 0:
+            plt.plot(base_equity, label="Baseline equity")
+        if agent_equity.size > 0:
+            plt.plot(agent_equity, label="Agent equity")
+        plt.title("Cumulative PnL (Equity Curves) — Baseline vs Agent")
+        plt.xlabel("Trade index")
+        plt.ylabel("Cumulative PnL")
+        plt.legend()
+        eq_img = os.path.join(out_dir, "equity_curves.png")
+        plt.tight_layout(); plt.savefig(eq_img, dpi=140); plt.close()
+        artifacts["equity_img"] = eq_img
+
+        # Reasoning timeline (decisions)
+        with open(logs_path) as f:
+            rows = [json.loads(line) for line in f]
+        ylabels = [r["decision"] for r in rows]
+        t = list(range(len(rows)))
+        plt.figure(figsize=(8,2.8))
+        plt.plot(t, list(range(1, len(rows)+1)), marker="o")
+        plt.yticks(list(range(1, len(rows)+1)), ylabels)
+        plt.xlabel("Decision step")
+        plt.title("Agent Decisions Over Time")
+        timeline_img = os.path.join(out_dir, "agent_decisions_timeline.png")
+        plt.tight_layout(); plt.savefig(timeline_img, dpi=140); plt.close()
+        artifacts["timeline_img"] = timeline_img
 
     return {
-        "baseline": base,
-        "agent": agg,
-        "artifacts": {
-            "metrics_img": metrics_img,
-            "timeline_img": timeline_img,
-            "summary_csv": summary_csv
-        }
+        "baseline": _metrics_from_result(base_res) | {"equity": base_equity.tolist()},
+        "agent": agg | {"equity": agent_equity.tolist()},
+        "artifacts": artifacts
     }
 
 if __name__ == "__main__":
-    # default params
     run_pipeline()
-    print("Saved artifacts to ../results")
+    print("Artifacts saved")
