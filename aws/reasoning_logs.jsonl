@@ -1,3 +1,3 @@
-{"timestamp": 1759823227, "metrics": {"regime": "calm_trend"}, "decision": "EWMA", "params": {"alpha": 0.05, "z": 2.0}, "reason": "Low volatility upward drift; EWMA z-threshold is effective."}
-{"timestamp": 1759823227, "metrics": {"regime": "volatile"}, "decision": "Volatility", "params": {"window": 50, "max_vol": 0.01}, "reason": "Volatility spike detected; trade only in low-vol windows."}
-{"timestamp": 1759823227, "metrics": {"regime": "jumpy"}, "decision": "Persistence", "params": {"hold": 2, "mean_alpha": 0.05, "z": 0.15}, "reason": "Jumps present; require persistence above rolling mean."}
+{"timestamp": 1759827426, "decision": "EWMA", "reason": "Stable upward trend with low volatility", "context": {"regime": "calm_trend"}}
+{"timestamp": 1759827426, "decision": "Volatility", "reason": "Elevated return volatility; prefer volatility gate", "context": {"regime": "volatile"}}
+{"timestamp": 1759827426, "decision": "Persistence", "reason": "Spiky moves; require persistence above rolling mean", "context": {"regime": "jumpy"}}

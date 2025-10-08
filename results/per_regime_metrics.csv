@@ -1,0 +1,4 @@
+regime,total_pnl,trades,fsr,sharpe_like,dd_recovery_ticks
+calm_trend,0.7812569371992887,1,0.0,0.0,0
+volatile,0.0,0,0.0,0.0,0
+jumpy,-5.305505567966939,79,0.4936708860759494,-0.008806449635094379,0

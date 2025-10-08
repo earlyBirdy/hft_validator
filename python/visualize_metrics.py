@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from synthetic_market import labeled_scenarios
-from validator_sim import EWMAValidator, VolatilityValidator, PersistenceValidator, simulate
+from validator_sim import EWMAValidator, VolatilityValidator, PersistenceValidator, ConfirmWrapper, simulate
 from agent_reasoner import decide, log_decision
 
 def _metrics_from_result(res):
@@ -18,12 +18,13 @@ def _metrics_from_result(res):
 
 def run_pipeline(
     n_ticks=3000,
-    ewma_alpha=0.05, ewma_z=2.0,
-    vol_window=50, vol_max=0.01,
-    persist_hold=2, persist_mean_alpha=0.05, persist_z=0.15,
-    baseline_latency=5, agent_latency=1,
+    ewma_alpha=0.05, ewma_z=2.6,
+    vol_window=60, vol_max=0.009,
+    persist_hold=4, persist_mean_alpha=0.05, persist_z=0.28,
+    baseline_latency=5, agent_latency=2,
     cost_bps=0.8, slip_bps=0.5,
-    pos_calm=1.0, pos_volatile=0.6, pos_jumpy=0.4,
+    pos_calm=0.8, pos_volatile=0.45, pos_jumpy=0.35,
+    min_interval_ticks=7, max_trades_per_100=12, confirm=2,
     out_dir="../results", logs_path="../aws/reasoning_logs.jsonl",
     generate_artifacts=True
 ):
@@ -31,21 +32,21 @@ def run_pipeline(
     logs_path = os.path.abspath(logs_path)
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.dirname(logs_path), exist_ok=True)
-    # fresh reasoning log
     open(logs_path, "w").close()
 
-    # Data
     df = labeled_scenarios(n=n_ticks)
     regimes = df['regime'].unique().tolist()
 
-    # Baseline on full run
+    z_enter = ewma_z
+    z_exit = max(ewma_z - 0.6, 1.2)
+
     base_res = simulate(
-        df, EWMAValidator(ewma_alpha, ewma_z),
-        latency_ticks=baseline_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=1.0
+        df, ConfirmWrapper(EWMAValidator(ewma_alpha, z_enter, z_exit), confirm=confirm),
+        latency_ticks=baseline_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=1.0,
+        min_interval_ticks=min_interval_ticks, max_trades_per_100=max_trades_per_100
     )
     base_equity = np.array(base_res.get("equity", [0.0]), dtype=float)
 
-    # Agent per regime
     per_regime = []
     agent_equity_parts = []
     for reg in regimes:
@@ -59,14 +60,16 @@ def run_pipeline(
             pos = pos_jumpy
 
         if dec["validator"] == "EWMA":
-            res = simulate(sub, EWMAValidator(ewma_alpha, ewma_z),
-                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+            v = ConfirmWrapper(EWMAValidator(ewma_alpha, z_enter, z_exit), confirm=confirm)
         elif dec["validator"] == "Volatility":
-            res = simulate(sub, VolatilityValidator(vol_window, vol_max),
-                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+            v = ConfirmWrapper(VolatilityValidator(vol_window, vol_max), confirm=confirm)
         else:
-            res = simulate(sub, PersistenceValidator(persist_hold, persist_mean_alpha, persist_z),
-                           latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos)
+            v = ConfirmWrapper(PersistenceValidator(persist_hold, persist_mean_alpha, persist_z), confirm=confirm)
+
+        res = simulate(
+            sub, v, latency_ticks=agent_latency, cost_bps=cost_bps, slip_bps=slip_bps, position=pos,
+            min_interval_ticks=min_interval_ticks, max_trades_per_100=max_trades_per_100
+        )
 
         log_decision(dec, {"regime": reg}, logs_path)
         met = _metrics_from_result(res)
@@ -74,7 +77,6 @@ def run_pipeline(
         per_regime.append(met)
         agent_equity_parts.append(np.array(res.get("equity", [0.0]), dtype=float))
 
-    # Concatenate agent equity segments with offset so curve is continuous
     agent_equity = []
     offset = 0.0
     for seg in agent_equity_parts:
@@ -85,7 +87,6 @@ def run_pipeline(
         agent_equity.extend(seg_adj.tolist())
     agent_equity = np.array(agent_equity, dtype=float)
 
-    # Aggregate agent metrics
     agg = {
         "total_pnl": float(sum(m["total_pnl"] for m in per_regime)),
         "trades": int(sum(m["trades"] for m in per_regime)),
@@ -96,13 +97,10 @@ def run_pipeline(
     }
 
     artifacts = {}
-
-    # Write per-regime CSV
     per_regime_csv = os.path.join(out_dir, "per_regime_metrics.csv")
     pd.DataFrame(per_regime)[["regime","total_pnl","trades","fsr","sharpe_like","dd_recovery_ticks"]].to_csv(per_regime_csv, index=False)
     artifacts["per_regime_csv"] = per_regime_csv
 
-    # Summary CSV
     summary_csv = os.path.join(out_dir, "summary.csv")
     with open(summary_csv, "w") as f:
         f.write("metric,baseline,agent\n")
@@ -115,7 +113,6 @@ def run_pipeline(
     artifacts["summary_csv"] = summary_csv
 
     if generate_artifacts:
-        # Metrics bar chart
         labels = ["FSR", "Sharpe-like", "DD Recovery"]
         base_vals = [base_res["fsr"], base_res["sharpe_like"], base_res["dd_recovery_ticks"]]
         agent_vals = [agg["fsr"], agg["sharpe_like"], agg["dd_recovery_ticks"]]
@@ -125,18 +122,16 @@ def run_pipeline(
         plt.bar([i-0.15 for i in x], base_vals, width=0.3, label=f"Baseline (EWMA, {baseline_latency} ticks)")
         plt.bar([i+0.15 for i in x], agent_vals, width=0.3, label=f"Agent (Adaptive, {agent_latency} ticks)")
         plt.xticks(list(x), labels)
-        plt.title("Baseline vs Agent — Key Metrics (with costs & scaling)")
+        plt.title("Baseline vs Agent — Key Metrics (gated & confirmed)")
         plt.legend()
         metrics_img = os.path.join(out_dir, "metrics_compare.png")
         plt.tight_layout(); plt.savefig(metrics_img, dpi=140); plt.close()
         artifacts["metrics_img"] = metrics_img
 
-        # Equity curve plot (Baseline vs Agent)
         plt.figure(figsize=(9,4))
-        if base_equity.size > 0:
-            plt.plot(base_equity, label="Baseline equity")
-        if agent_equity.size > 0:
-            plt.plot(agent_equity, label="Agent equity")
+        if base_vals is not None:
+            plt.plot(np.array(base_res.get("equity", [0.0]), dtype=float), label="Baseline equity")
+        plt.plot(agent_equity, label="Agent equity")
         plt.title("Cumulative PnL (Equity Curves) — Baseline vs Agent")
         plt.xlabel("Trade index")
         plt.ylabel("Cumulative PnL")
@@ -145,7 +140,6 @@ def run_pipeline(
         plt.tight_layout(); plt.savefig(eq_img, dpi=140); plt.close()
         artifacts["equity_img"] = eq_img
 
-        # Reasoning timeline (decisions)
         with open(logs_path) as f:
             rows = [json.loads(line) for line in f]
         ylabels = [r["decision"] for r in rows]
@@ -160,7 +154,7 @@ def run_pipeline(
         artifacts["timeline_img"] = timeline_img
 
     return {
-        "baseline": _metrics_from_result(base_res) | {"equity": base_equity.tolist()},
+        "baseline": _metrics_from_result(base_res) | {"equity": base_res.get("equity", [0.0])},
         "agent": agg | {"equity": agent_equity.tolist()},
         "artifacts": artifacts
     }

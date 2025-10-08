@@ -10,28 +10,31 @@ def score(metrics):
     agent = metrics['agent']
     return (
         agent['sharpe_like']
-        - 0.25 * agent['fsr']
-        - 0.0005 * agent['trades']
+        - 0.30 * agent['fsr']
+        - 0.0010 * agent['trades']
         + 0.00005 * agent['total_pnl']
     )
 
-def random_search(iters=12, seed=42, n_ticks=3500, baseline_latency=5, agent_latency=1,
+def random_search(iters=10, seed=42, n_ticks=3500, baseline_latency=5, agent_latency=2,
                   cost_bps=0.8, slip_bps=0.5, out_json=None):
     random.seed(seed)
     best = None
     best_score = -1e9
-    for i in range(iters):
+    for _ in range(iters):
         params = {
-            'ewma_alpha': random.uniform(0.01, 0.12),
-            'ewma_z': random.uniform(1.8, 3.2),
-            'vol_window': random.randint(20, 120),
-            'vol_max': random.uniform(0.003, 0.02),
-            'persist_hold': random.randint(2, 6),
-            'persist_mean_alpha': random.uniform(0.01, 0.12),
-            'persist_z': random.uniform(0.05, 0.35),
-            'pos_calm': random.uniform(0.6, 1.1),
-            'pos_volatile': random.uniform(0.2, 0.7),
-            'pos_jumpy': random.uniform(0.1, 0.5),
+            'ewma_alpha': random.uniform(0.02, 0.10),
+            'ewma_z': random.uniform(2.2, 3.2),
+            'vol_window': random.randint(30, 120),
+            'vol_max': random.uniform(0.005, 0.015),
+            'persist_hold': random.randint(3, 6),
+            'persist_mean_alpha': random.uniform(0.02, 0.10),
+            'persist_z': random.uniform(0.18, 0.4),
+            'pos_calm': random.uniform(0.6, 1.0),
+            'pos_volatile': random.uniform(0.3, 0.6),
+            'pos_jumpy': random.uniform(0.2, 0.5),
+            'min_interval_ticks': random.randint(5, 10),
+            'max_trades_per_100': random.randint(10, 18),
+            'confirm': random.randint(2, 3),
         }
         metrics = run_pipeline(
             n_ticks=n_ticks,

@@ -3,11 +3,13 @@ import numpy as np
 import pandas as pd
 
 class EWMAValidator:
-    def __init__(self, alpha=0.05, z=2.5):
+    def __init__(self, alpha=0.05, z_enter=2.5, z_exit=1.8):
         self.alpha = alpha
-        self.z = z
+        self.z_enter = z_enter
+        self.z_exit = z_exit
         self.mean = None
         self.var = 1.0
+        self.in_signal = False
     def step(self, x):
         if self.mean is None:
             self.mean = x
@@ -17,10 +19,15 @@ class EWMAValidator:
         self.var = (1 - self.alpha) * (self.var + self.alpha * delta * delta)
         std = (self.var + 1e-12) ** 0.5
         z = abs((x - self.mean) / std)
-        return z > self.z
+        thr = self.z_enter if not self.in_signal else self.z_exit
+        fired = z > thr
+        if fired and not self.in_signal:
+            self.in_signal = True
+        elif not fired and self.in_signal and z < self.z_exit:
+            self.in_signal = False
+        return fired
 
 class VolatilityValidator:
-    """Trade only when recent *return* volatility is below a threshold."""
     def __init__(self, window=50, max_vol=0.01):
         self.window = window
         self.max_vol = max_vol
@@ -38,10 +45,9 @@ class VolatilityValidator:
         if len(self.buf) < 5:
             return False
         std = float(np.std(self.buf))
-        return std < self.max_vol  # e.g., 0.003–0.02
+        return std < self.max_vol
 
 class PersistenceValidator:
-    """Require price to stay above a rolling mean by z for 'hold' ticks."""
     def __init__(self, hold=3, mean_alpha=0.05, z=0.2):
         self.hold = hold
         self.mean_alpha = mean_alpha
@@ -60,28 +66,37 @@ class PersistenceValidator:
             self.c = 0
         return self.c >= self.hold
 
-class ImbalanceValidator:
-    def __init__(self, thr=0.6):
-        self.thr = thr
+class ConfirmWrapper:
+    def __init__(self, inner, confirm=2):
+        self.inner = inner
+        self.confirm = confirm
+        self.c = 0
     def step(self, x):
-        imb = 0.7 if (x % 2) > 1 else 0.4
-        return imb > self.thr
+        if self.inner.step(x):
+            self.c += 1
+        else:
+            self.c = 0
+        return self.c >= self.confirm
 
-def simulate(df, validator, latency_ticks=1, cost_bps=0.5, slip_bps=0.3, position=1.0):
-    """Simple simulator:
-    - If validator fires, enter after latency_ticks, exit 1 tick later in trade direction.
-    - Apply round-trip transaction costs and slippage (bps on entry & exit).
-    - position scales PnL and costs linearly.
-    """
+def simulate(df, validator, latency_ticks=1, cost_bps=0.5, slip_bps=0.3, position=1.0,
+             min_interval_ticks=5, max_trades_per_100=15):
     price = df["price"].values
     trades = []
     pnl_series = []
-    last_trade_idx = -9999
-    bps_factor = (cost_bps + slip_bps) * 1e-4 * 2.0  # round-trip
+    last_trade_idx = -10**9
+    bps_factor = (cost_bps + slip_bps) * 1e-4 * 2.0
+    trade_count_rolling = 0
 
     for i in range(len(price)):
+        if i % 100 == 0:
+            trade_count_rolling = 0
+
+        if (i - last_trade_idx) < min_interval_ticks or trade_count_rolling >= max_trades_per_100:
+            validator.step(price[i])
+            continue
+
         signal = validator.step(price[i])
-        if signal and i - last_trade_idx > latency_ticks:
+        if signal:
             j = min(i + latency_ticks, len(price)-1)
             direction = 1 if price[j] - price[i] >= 0 else -1
             k = min(j + 1, len(price)-1)
@@ -91,6 +106,7 @@ def simulate(df, validator, latency_ticks=1, cost_bps=0.5, slip_bps=0.3, positio
             trades.append({"i": i, "j": j, "k": k, "dir": direction, "pnl": float(trade_pnl)})
             pnl_series.append(trade_pnl)
             last_trade_idx = i
+            trade_count_rolling += 1
 
     pnl_series = np.array(pnl_series) if pnl_series else np.array([0.0])
     total_pnl = float(pnl_series.sum())
