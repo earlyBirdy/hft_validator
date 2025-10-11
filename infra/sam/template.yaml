@@ -1,40 +1,89 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Thin adapter (API GW -> Lambda -> optional Bedrock)
+Description: HFT Validator - Lambda + API Gateway + Bedrock permissions
+
+Parameters:
+  StackName:
+    Type: String
+    Default: HFTValidatorStack
+  AwsRegion:
+    Type: String
+    Default: us-east-1
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+  LambdaFunctionName:
+    Type: String
+    Default: HFTAgentValidator
+
 Globals:
   Function:
-    Timeout: 10
+    Runtime: python3.11
+    Timeout: 30
     MemorySize: 512
-    Runtime: python3.12
-    Handler: lambda_handler.handler
+
 Resources:
-  AgentApi:
-    Type: AWS::Serverless::Api
-    Properties:
-      StageName: prod
-  AgentFunction:
+  DecisionFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: ./
-      Handler: lambda_handler.handler
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - Statement:
-            Sid: BedrockInvoke
-            Effect: Allow
-            Action:
-              - bedrock:InvokeModel
-              - bedrock:InvokeModelWithResponseStream
-            Resource: "*"
+      FunctionName: !Ref LambdaFunctionName
+      Handler: aws/lambda_handler.lambda_handler
+      CodeUri: ../../
       Environment:
         Variables:
-          AGENT_IMPL: bedrock
-          USE_BEDROCK: '1'
-          DATA_PATH: data/sample_prices.csv
-      Events:
-        PostDecision:
-          Type: Api
-          Properties:
-            Path: /decision
-            Method: post
-            RestApiId: !Ref AgentApi
+          AWS_REGION: !Ref AwsRegion
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - "bedrock:InvokeModel"
+              Resource: "*"
+      Architectures:
+        - x86_64
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+
+  DecisionRoute:
+    Type: AWS::Serverless::FunctionUrl
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt DecisionFunction.Arn
+
+  # Optional API route (via HttpApi) - proxy to Lambda
+  DecisionIntegration:
+    Type: AWS::Serverless::Integration
+    Properties:
+      Type: LambdaProxy
+      IntegrationUri: !GetAtt DecisionFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  DecisionApiRoute:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: ["POST"]
+        AllowHeaders: ["*"]
+
+Outputs:
+  FunctionName:
+    Value: !Ref LambdaFunctionName
+  FunctionArn:
+    Value: !GetAtt DecisionFunction.Arn
+  FunctionUrl:
+    Value: !GetAtt DecisionFunctionUrl.FunctionUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionUrl"
