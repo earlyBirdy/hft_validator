@@ -1,42 +1,17 @@
 name: HFT Validator Agent
-version: 1.0
-description: >
-  An AI agent that evaluates recent trading metrics and recommends a validator
-  and parameters to optimize strategy performance. Integrates with a Lambda
-  runner and a C++ validator core for speed.
+version: 1.1
+description: AI agent that recommends a validator and hyperparameters from trading metrics.
 bedrock:
   modelId: ${BEDROCK_MODEL_ID}
   region: ${AWS_REGION}
-  # Notes: This manifest describes intent and tool usage for the hackathon.
 intents:
   - name: DecideValidator
-    description: Choose validator and hyperparameters given recent metrics.
-    input_schema:
-      type: object
-      required: [metrics]
-      properties:
-        metrics:
-          type: object
-          description: Trading metrics such as sharpe_like, drawdown, trades, etc.
-    output_schema:
-      type: object
-      required: [validator, params, reason]
-      properties:
-        validator: { type: string }
-        params: { type: object }
-        reason: { type: string }
+    input_schema: {type: object, required: [metrics], properties: {metrics: {type: object}}}
+    output_schema: {type: object, required: [validator, params, reason]}
 tools:
   - name: LambdaDecisionTool
     type: aws_lambda
-    description: Invoke the decision Lambda to get a JSON decision
-    config:
-      functionName: ${LAMBDA_FUNCTION_NAME}
+    config: { functionName: ${LAMBDA_FUNCTION_NAME} }
 security:
   authentication: aws_iam
-  permissions:
-    - bedrock:InvokeModel
-    - lambda:InvokeFunction
-notes: |
-  This manifest is provided for hackathon review. The agent currently calls the Bedrock model
-  via Lambda. Update modelId/region to your provisioned Bedrock model/region. Ensure the IAM role
-  bound to Lambda includes bedrock:InvokeModel on the selected model and logs permissions.
+  permissions: [bedrock:InvokeModel, lambda:InvokeFunction]

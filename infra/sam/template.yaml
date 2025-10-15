@@ -1,27 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: HFT Validator - Lambda + API Gateway + Bedrock permissions
-
+Description: HFT Validator - Lambda + Function URL + Bedrock permissions
 Parameters:
-  StackName:
-    Type: String
-    Default: HFTValidatorStack
-  AwsRegion:
-    Type: String
-    Default: us-east-1
-  BedrockModelId:
-    Type: String
-    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
-  LambdaFunctionName:
-    Type: String
-    Default: HFTAgentValidator
-
+  AwsRegion: {Type: String, Default: us-east-1}
+  BedrockModelId: {Type: String, Default: anthropic.claude-3-5-sonnet-20241022-v2:0}
+  LambdaFunctionName: {Type: String, Default: HFTAgentValidator}
 Globals:
-  Function:
-    Runtime: python3.11
-    Timeout: 30
-    MemorySize: 512
-
+  Function: {Runtime: python3.11, Timeout: 30, MemorySize: 512}
 Resources:
   DecisionFunction:
     Type: AWS::Serverless::Function
@@ -37,53 +22,21 @@ Resources:
         - AWSLambdaBasicExecutionRole
         - Version: '2012-10-17'
           Statement:
-            - Effect: Allow
-              Action:
-                - "bedrock:InvokeModel"
-              Resource: "*"
-      Architectures:
-        - x86_64
-
-  HttpApi:
-    Type: AWS::Serverless::HttpApi
-    Properties:
-      CorsConfiguration:
-        AllowOrigins:
-          - "*"
-        AllowHeaders:
-          - "*"
-        AllowMethods:
-          - GET
-          - POST
-
-  DecisionRoute:
-    Type: AWS::Serverless::FunctionUrl
+            - {Effect: Allow, Action: [bedrock:InvokeModel], Resource: "*"}
+      Architectures: [x86_64]
+  FunctionUrl:
+    Type: AWS::Lambda::Url
     Properties:
       AuthType: NONE
       TargetFunctionArn: !GetAtt DecisionFunction.Arn
-
-  # Optional API route (via HttpApi) - proxy to Lambda
-  DecisionIntegration:
-    Type: AWS::Serverless::Integration
+  PermissionForFunctionUrlPublic:
+    Type: AWS::Lambda::Permission
     Properties:
-      Type: LambdaProxy
-      IntegrationUri: !GetAtt DecisionFunction.Arn
-      PayloadFormatVersion: '2.0'
-
-  DecisionApiRoute:
-    Type: AWS::Serverless::HttpApi
-    Properties:
-      CorsConfiguration:
-        AllowOrigins: ["*"]
-        AllowMethods: ["POST"]
-        AllowHeaders: ["*"]
-
+      FunctionName: !Ref DecisionFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
 Outputs:
-  FunctionName:
-    Value: !Ref LambdaFunctionName
-  FunctionArn:
-    Value: !GetAtt DecisionFunction.Arn
-  FunctionUrl:
-    Value: !GetAtt DecisionFunctionUrl.FunctionUrl
-    Export:
-      Name: !Sub "${AWS::StackName}-FunctionUrl"
+  FunctionName: {Value: !Ref LambdaFunctionName}
+  FunctionArn: {Value: !GetAtt DecisionFunction.Arn}
+  FunctionUrl: {Value: !GetAtt FunctionUrl.FunctionUrl}
