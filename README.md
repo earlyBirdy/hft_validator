@@ -164,3 +164,37 @@ curl -X POST "$API_URL/decision" -d '{}' -H "Content-Type: application/json"
 - When Baseline and Final curves are identical, the **Final** line is dashed and a note appears above the chart.
 - Metrics on the sample set are illustrative; bring your own data via `DATA_PATH` to validate your case.
 - The AWS integration is opt‑in and lives behind a clean interface so you can remove it without touching core logic.
+
+
+## Config-driven strategy additions
+
+Drop YAML/JSON configs under `strategies/`.
+
+Example (KD strategy runner):
+```bash
+python3 -c "from python.strategy_runner import run_kd_from_config; print(run_kd_from_config('strategies/strategy_mtx_kd_1m.yaml', n_ticks=3000))"
+```
+
+## Fully generic strategy runner
+
+Each strategy config must declare `strategy.type` (e.g., `kd_cross`).
+
+Run any strategy config via:
+```bash
+python3 python/strategy_runner.py --config strategies/strategy_mtx_kd_1m.yaml --n_ticks 3000
+```
+
+To add a new strategy type:
+1) Create a new implementation module under `python/strategy_impl_<type>.py` exposing `run(spec, df)`
+2) Register it in `python/strategy_registry.py` under HANDLERS
+3) Create a config file with `strategy.type: "<type>"` in `strategies/`
+
+## Auto-discovered strategy types
+
+Any file matching `python/strategy_impl_*.py` is auto-registered as `strategy.type = <suffix>`.
+Example: `python/strategy_impl_kd_cross.py` => `strategy.type: "kd_cross"`
+
+Run any config:
+```bash
+python3 python/strategy_runner.py --config strategies/strategy_mtx_kd_1m.yaml --n_ticks 3000
+```

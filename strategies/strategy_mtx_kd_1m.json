@@ -1,0 +1,89 @@
+{
+  "strategy": {
+    "id": "mtx_kd_1m_pyramid_v1",
+    "name": "小台指 1分 KD交叉 區間反轉 + 加碼",
+    "instrument": {
+      "symbol": "MTX",
+      "timeframe": "1m",
+      "timezone": "Asia/Taipei"
+    },
+    "type": "kd_cross"
+  },
+  "indicator": {
+    "kd": {
+      "k_period": 9,
+      "d_period": 3,
+      "smooth": 3,
+      "source": "close"
+    }
+  },
+  "signals": {
+    "crossover": {
+      "bullish": "K_crosses_above_D",
+      "bearish": "K_crosses_below_D"
+    }
+  },
+  "filters": {
+    "thresholds": {
+      "oversold": 20,
+      "overbought": 80
+    },
+    "rules": {
+      "long_zone_expr": "min(K, D) < oversold",
+      "short_zone_expr": "max(K, D) > overbought"
+    }
+  },
+  "session": {
+    "trade_days": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri"
+    ],
+    "entry_window": {
+      "start": "09:00",
+      "end": "10:00"
+    },
+    "force_flat": {
+      "time": "10:00",
+      "mode": "market"
+    }
+  },
+  "position": {
+    "sizing": {
+      "initial_size": 1,
+      "add_size": 1,
+      "max_position": 4,
+      "allow_pyramiding": true,
+      "pyramiding_trigger": "same_direction_signal"
+    },
+    "direction": {
+      "allow_long": true,
+      "allow_short": true
+    }
+  },
+  "execution": {
+    "entry": {
+      "order_type": "market"
+    },
+    "exit": {
+      "order_type": "market"
+    },
+    "reverse_handling": {
+      "mode": "flatten_then_reverse",
+      "same_bar_reverse": true
+    }
+  },
+  "risk": {
+    "stop_loss": {
+      "enabled": false
+    },
+    "take_profit": {
+      "enabled": false
+    }
+  },
+  "logging": {
+    "enabled": true
+  }
+}
