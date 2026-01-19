@@ -198,3 +198,8 @@ Run any config:
 ```bash
 python3 python/strategy_runner.py --config strategies/strategy_mtx_kd_1m.yaml --n_ticks 3000
 ```
+
+### Strategy Lab updates
+- Computes Sharpe-like, FSR, max drawdown from equity for each strategy run
+- Saves results to results/strategy_runs_<timestamp>.csv
+- Adds 'Run ALL configs' button
